@@ -1,0 +1,568 @@
+networks:
+  isweet:
+    driver: bridge
+
+volumes:
+  postgres_data:
+
+services:
+  # --- 1. 基础数据库 ---
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: always
+    mem_limit: 512M
+    networks:
+      - isweet
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=metatube
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 2. 网络代理核心 ---
+  mihomo:
+    image: metacubex/mihomo:latest
+    container_name: mihomo
+    restart: always
+    mem_limit: 256M
+    networks:
+      - isweet
+    volumes:
+      - /vol1/1000/docker/mihomo:/root/.config/mihomo
+    ports:
+      - "7890:7890"
+      - "9090:9090"
+    environment:
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --timeout=5 http://localhost:9090 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 3. MetaCubeXD 前端面板 ---
+  metacubexd:
+    image: ghcr.io/metacubex/metacubexd:latest
+    container_name: metacubexd
+    restart: always
+    mem_limit: 128M
+    networks:
+      - isweet
+    ports:
+      - "9097:80"
+    environment:
+      - TZ=Asia/Shanghai
+    depends_on:
+      mihomo:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 4. 数据库在线整理 ---
+  db_online:
+    image: dbonline/db_online:latest
+    container_name: db_online
+    restart: always
+    mem_limit: 512M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mihomo:
+        condition: service_healthy
+    networks:
+      - isweet
+    ports:
+      - "9092:9090"
+    environment:
+      - TZ=Asia/Shanghai
+      - DB_TYPE=postgresql
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/db_online
+      - HTTP_PROXY=http://mihomo:7890
+      - HTTPS_PROXY=http://mihomo:7890
+      - NO_PROXY=localhost,127.0.0.1,postgres,mihomo,db_online
+    volumes:
+      - /vol1/1000/docker/dbo/data:/app/data
+      - /vol1/1000/docker/dbo/cache:/app/cache
+      - /vol1/1000/docker/dbo/logs:/app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 5. 播放器 ---
+  emby:
+    image: amilys/embyserver:latest
+    container_name: emby
+    restart: always
+    networks:
+      - isweet
+    ports:
+      - "8096:8096"
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - /vol1/1000/docker/emby/config:/config
+      - /vol1/1000/docker/emby/cache:/cache
+      - /vol1/1000/media:/data
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 6. 302直链同步 ---
+  qms:
+    image: qicfan/qmediasync:latest
+    container_name: qms
+    restart: always
+    mem_limit: 256M
+    networks:
+      - isweet
+    ports:
+      - "12333:12333"
+      - "8095:8095"
+    environment:
+      - TZ=Asia/Shanghai
+      - HTTP_PROXY=http://mihomo:7890
+      - HTTPS_PROXY=http://mihomo:7890
+      - NO_PROXY=localhost,127.0.0.1,emby,mihomo,postgres
+      - USERNAME=qingtian
+      - PASSWORD=123456Qaz.
+    volumes:
+      - /vol1/1000/docker/qmediasync/config:/app/config
+      - /vol1/1000/media:/media
+    depends_on:
+      mihomo:
+        condition: service_healthy
+      emby:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 7. 同步服务 (CMS) ---
+  cms:
+    image: imaliang/cloud-media-sync:latest
+    container_name: cms
+    restart: always
+    mem_limit: 512M
+    depends_on:
+      mihomo:
+        condition: service_healthy
+    networks:
+      - isweet
+    ports:
+      - "9527:9527"
+      - "9096:9096"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+      - RUN_ENV=online
+      - ADMIN_USERNAME=qingtian
+      - ADMIN_PASSWORD=123456Qaz.
+      - DONATE_CODE=CMS_2LPUZ1IU_58C3336E6B8144D2A5B10DD9B7F780BC
+      - EMBY_HOST_PORT=http://emby:8096
+      - EMBY_API_KEY=3034022a34d1489bbeb3c46337e9856b
+      - HTTP_PROXY=http://mihomo:7890
+      - HTTPS_PROXY=http://mihomo:7890
+      - NO_PROXY=localhost,127.0.0.1,mihomo,emby,postgres
+    volumes:
+      - /vol1/1000/docker/cms/config:/config
+      - /vol1/1000/docker/cms/logs:/logs
+      - /vol1/1000/docker/cms/cache:/var/cache/nginx/emby
+      - /vol1/1000/media:/media
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 8. 刮削引擎 ---
+  metatube:
+    image: ghcr.io/metatube-community/metatube-server:latest
+    container_name: metatube
+    restart: always
+    mem_limit: 256M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mihomo:
+        condition: service_healthy
+    networks:
+      - isweet
+    ports:
+      - "8082:8080"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_DATABASE=metatube
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=postgres
+      - HTTP_PROXY=http://mihomo:7890
+      - HTTPS_PROXY=http://mihomo:7890
+      - NO_PROXY=localhost,127.0.0.1,mihomo,postgres
+    volumes:
+      - /vol1/1000/docker/metatube:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 9. 整理工具 (MDC-NG) ---
+  mdc:
+    image: mdcng/mdc:latest
+    container_name: mdc
+    restart: always
+    mem_limit: 512M
+    depends_on:
+      mihomo:
+        condition: service_healthy
+      flaresolverr:
+        condition: service_started
+    networks:
+      - isweet
+    ports:
+      - "9208:9208"
+    environment:
+      - PUID=0
+      - PGID=0
+      - TZ=Asia/Shanghai
+      - MDC_USERNAME=qingtian
+      - MDC_PASSWORD=123456Qaz.
+      - HTTP_PROXY=http://mihomo:7890
+      - HTTPS_PROXY=http://mihomo:7890
+      - NO_PROXY=localhost,127.0.0.1,postgres,mihomo,emby,flaresolverr,metatube,db_online
+    volumes:
+      - /vol1/1000/docker/mdcng:/config
+      - /vol1/1000/media:/Sexy1
+      - /vol02/1000-1-4d5b8e01/影视:/Sexy2
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 10. 数据库工具 (AVDB) ---
+  avdb:
+    image: leolitaly/avdb:latest
+    container_name: avdb
+    restart: always
+    mem_limit: 512M
+    user: root
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - isweet
+    ports:
+      - "9094:8000"
+    environment:
+      - TZ=Asia/Shanghai
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/avdb
+      - DB_TYPE=postgresql
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_DATABASE=avdb
+    volumes:
+      - /vol1/1000/docker/avdb:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 11. 解密加速 ---
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: always
+    shm_size: '2gb'
+    depends_on:
+      mihomo:
+        condition: service_healthy
+    networks:
+      - isweet
+    ports:
+      - "8191:8191"
+    environment:
+      - TZ=Asia/Shanghai
+      - LOG_LEVEL=info
+      - PROXY=http://mihomo:7890
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 12. 缓存服务 (Redis) ---
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: always
+    mem_limit: 256M
+    networks:
+      - isweet
+    command: redis-server --save 600 1 --requirepass isweet_redis
+    volumes:
+      - /vol1/1000/docker/redis/data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "isweet_redis", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 13. 影视自动化 (MoviePilot) ---
+  moviepilot:
+    image: jxxghp/moviepilot-v2:latest
+    container_name: moviepilot
+    hostname: moviepilot
+    stdin_open: true
+    tty: true
+    restart: always
+    mem_limit: 1G
+    networks:
+      - isweet
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      - NGINX_PORT=3000
+      - PORT=3001
+      - PUID=0
+      - PGID=0
+      - UMASK=000
+      - TZ=Asia/Shanghai
+      - SUPERUSER=qingtian
+      - SUPERUSER_PASSWORD=123456Qaz.
+      - DB_TYPE=postgresql
+      - DB_POSTGRESQL_HOST=postgres
+      - DB_POSTGRESQL_PORT=5432
+      - DB_POSTGRESQL_DATABASE=moviepilot
+      - DB_POSTGRESQL_USERNAME=postgres
+      - DB_POSTGRESQL_PASSWORD=postgres
+      - CACHE_BACKEND_TYPE=redis
+      - CACHE_BACKEND_URL=redis://:isweet_redis@redis:6379
+      - HTTP_PROXY=http://mihomo:7890
+      - HTTPS_PROXY=http://mihomo:7890
+      - NO_PROXY=localhost,127.0.0.1,postgres,redis,mihomo,emby
+    volumes:
+      - /vol1/1000/docker/moviepilot/config:/config
+      - /vol1/1000/docker/moviepilot/core:/moviepilot/.cache/ms-playwright
+      - /vol1/1000/media:/media
+      - /vol1/1000/media/TRtorrents:/torrents
+      - /vol1/1000/media/QBtorrents:/BT_backup
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mihomo:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 14. 视频下载站 (hanime1.me) ---
+  hanime-server:
+    image: heisenyu/hanime-server:latest
+    container_name: hanime-server
+    restart: always
+    mem_limit: 512M
+    network_mode: host
+    environment:
+      - USE_PROXY=true
+      - PROXY_URL=http://localhost:7890
+      - CLOUDFLARE_BYPASS_SERVICE_URL=http://localhost:7789
+    volumes:
+      - /vol1/1000/docker/hanime-server/nginx_default_override:/etc/nginx/sites-enabled/default
+      - /vol1/1000/media/dm:/app/backend/downloads
+      - /vol1/1000/docker/hanime-server/db:/app/backend/db
+      - /vol1/1000/docker/hanime-server/download_service.py:/app/backend/app/services/download_service.py
+    depends_on:
+      mihomo:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 15. CF Bypass 适配器 (hanime-server → FlareSolverr) ---
+  flare-adapter:
+    build: /vol1/1000/docker/flare-adapter
+    container_name: flare-adapter
+    restart: always
+    mem_limit: 256M
+    networks:
+      - isweet
+    ports:
+      - "7789:7789"
+    environment:
+      - PROXY_URL=http://mihomo:7890
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 16. 自动转码为 MP4 ---
+  auto-mp4:
+    image: alpine:latest
+    container_name: auto-mp4
+    restart: always
+    mem_limit: 128M
+    networks:
+      - isweet
+    command: >
+      sh -c "
+        apk add --no-cache ffmpeg inotify-tools >/dev/null 2>&1 &&
+        echo '[auto-mp4] 启动文件监听...' &&
+        inotifywait -m -e close_write,moved_to -r /media --format '%w%f' 2>/dev/null |
+        while read f; do
+          case \"$$f\" in
+            *.ts|*.mkv|*.webm|*.flv)
+              base=\"$${f%.*}\"
+              echo \"[auto-mp4] 转码: $$f -> $${base}.mp4\"
+              ffmpeg -i \"$$f\" -c copy -movflags +faststart \"$${base}.mp4\" -y 2>/dev/null &&
+              rm -f \"$$f\" &&
+              echo \"[auto-mp4] 完成: $${base}.mp4\"
+              ;;
+          esac
+        done
+      "
+    volumes:
+      - /vol1/1000/media/dm:/media
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 17. 里番自动下载器 (sidecar) ---
+  auto-downloader:
+    image: python:3.10-slim
+    container_name: hanime-auto-downloader
+    restart: unless-stopped
+    mem_limit: 256M
+    depends_on:
+      hanime-server:
+        condition: service_started
+    networks:
+      - isweet
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: >
+      sh -c "
+        pip install -q httpx 2>/dev/null &&
+        python /app/auto_downloader.py
+      "
+    environment:
+      - HANIME_API_URL=http://host.docker.internal:8000/api
+      - SCAN_INTERVAL_HOURS=1
+      - START_YEAR=2008
+      - BATCH_SIZE=30
+      - API_DELAY=1.0
+      - EXCLUDE_KEYWORDS=AI生成,AI生成动画,人工智能,泡面番
+      - EXCLUDE_DURATION_MINUTES=8
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./auto_downloader.py:/app/auto_downloader.py
+      - /vol1/1000/docker/hanime-server/data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- 18. 里番刮削工具 (MHTI) ---
+  mhti:
+    image: xiyan520/mhti:latest
+    container_name: mhti
+    restart: unless-stopped
+    mem_limit: 512M
+    depends_on:
+      mihomo:
+        condition: service_healthy
+    networks:
+      - isweet
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "7688:8000"
+    environment:
+      - TZ=Asia/Shanghai
+      - DATA_DIR=/app/data
+      - HTTP_PROXY=http://mihomo:7890
+      - HTTPS_PROXY=http://mihomo:7890
+      - HANIME_API_URL=http://host.docker.internal:8000
+      - BANGUMI_ACCESS_TOKEN=EJqPrueUpRAzC1WQ1OufQYsrcpNzXMgxn1TiOHto
+      - NO_PROXY=localhost,127.0.0.1,mihomo,host.docker.internal,api.bgm.tv
+    volumes:
+      - /vol1/1000/docker/mhti/data:/app/data
+      - /vol1/1000/media/dm:/media:ro
+      - /vol1/1000/media/hanime:/output
+      - /vol1/1000/docker/mhti/enhanced/server/models/hanime.py:/app/server/models/hanime.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/services/hanime_service.py:/app/server/services/hanime_service.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/services/scraper_service.py:/app/server/services/scraper_service.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/services/parser_service.py:/app/server/services/parser_service.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/services/parsers/base.py:/app/server/services/parsers/base.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/services/parsers/series_name.py:/app/server/services/parsers/series_name.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/models/parser.py:/app/server/models/parser.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/core/container.py:/app/server/core/container.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/services/tmdb_service.py:/app/server/services/tmdb_service.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/services/scraper_config.py:/app/server/services/scraper_config.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/models/bangumi.py:/app/server/models/bangumi.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/services/bangumi_service.py:/app/server/services/bangumi_service.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/services/translation_service.py:/app/server/services/translation_service.py:ro
+      - /vol1/1000/docker/mhti/enhanced/server/services/parsers/cleaner.py:/app/server/services/parsers/cleaner.py:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

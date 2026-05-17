@@ -996,6 +996,39 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
     # ── End Hanime helpers ──────────────────────────────────────────
 
+    async def _lookup_tmdb_season(
+        self, series_name: str, episode_num: int
+    ) -> int | None:
+        """通过 TMDB 查找剧集的分季信息。
+
+        TMDB 使用每季独立集号（S01E01, S02E01），非绝对编号。
+        因此仅当 TMDB 确认只有一季时返回 1，多季情况返回 None 交由其他方式判断。
+
+        Args:
+            series_name: 剧集名称
+            episode_num: 集号
+
+        Returns:
+            季号，或 None（无法确定时）
+        """
+        try:
+            search_response = await self.tmdb_service.search_series_by_api(series_name)
+            adult_results = [r for r in search_response.results if r.adult]
+            if not adult_results:
+                return None
+
+            series = await self.tmdb_service.get_series_by_api(adult_results[0].id)
+            if not series or not series.seasons:
+                return None
+
+            real_seasons = [s for s in series.seasons if s.season_number > 0]
+            if len(real_seasons) == 1:
+                return 1
+
+        except Exception:
+            pass
+        return None
+
     async def _scrape_via_hanime(
         self,
         file_path: str,
@@ -1032,6 +1065,15 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         series_name = parsed.series_name or self.hanime_service.get_series_name(detail)
         episode_num = parsed.episode or self.hanime_service.get_episode_number(detail)
         season_num = parsed.season or 1
+
+        # 尝试通过 TMDB 获取分季信息
+        if parsed.season is None:
+            tmdb_season = await self._lookup_tmdb_season(series_name, episode_num)
+            if tmdb_season is not None:
+                season_num = tmdb_season
+                hanime_step.logs.append(ScrapeLogEntry(
+                    message=f"TMDB 分季: Season {season_num}"
+                ))
 
         hanime_step.logs.append(ScrapeLogEntry(message=f"Hanime 匹配: {series_name} S{season_num:02d}E{episode_num:02d}"))
         await notify()
@@ -1264,6 +1306,15 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
         episode_num = parsed.episode or 1
         season_num = parsed.season or 1
+
+        # 尝试通过 TMDB 获取分季信息
+        if parsed.season is None:
+            tmdb_season = await self._lookup_tmdb_season(bgm_title, episode_num)
+            if tmdb_season is not None:
+                season_num = tmdb_season
+                bgm_step.logs.append(ScrapeLogEntry(
+                    message=f"TMDB 分季: Season {season_num}"
+                ))
 
         # Generate NFO from Bangumi data
         nfo_step = ScrapeLogStep(name="生成 NFO (Bangumi)", logs=[])

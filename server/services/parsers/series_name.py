@@ -106,6 +106,11 @@ class SeriesNamePlugin(ParserPlugin):
             ctx.series_name = name
             ctx.matched_patterns.append(f"{self.name}:extracted")
 
+        # 检测嵌入在剧名末尾的季节数字（仅当集数已由其他解析器提取时）
+        # 例: "自宅警备员2 第1话" → 剧名="自宅警备员", 季=2
+        if ctx.series_name and ctx.season is None and ctx.episode is not None:
+            ctx = self._extract_season_from_series_name(ctx)
+
         # 提取年份
         year = self._extract_year(ctx.original_filename)
         if year:
@@ -114,6 +119,37 @@ class SeriesNamePlugin(ParserPlugin):
         # 计算置信度
         ctx.confidence = self._calculate_confidence(ctx)
 
+        return ctx
+
+    def _extract_season_from_series_name(self, ctx: ParseContext) -> ParseContext:
+        """从剧名末尾提取季节数字。
+
+        仅当集数已通过其他插件检知时才执行，避免将集数误判为季数。
+        例: "自宅警备员2" + 已有episode=1 → 剧名="自宅警备员", season=2
+             "Floating Material 1" + 无episode → 不处理
+        """
+        name = ctx.series_name
+        # 匹配末尾数字：空格+数字 或 紧接数字
+        m = re.match(r"^(.+?)\s*(\d{1,2})$", name)
+        if not m:
+            return ctx
+        base = m.group(1).strip()
+        num = int(m.group(2))
+        # 基本剧名必须有意义，数字范围 1-12
+        if len(base) < 2 or not (1 <= num <= 12):
+            return ctx
+        # 排除明显的年份模式（剧名末尾是四位数年份的情况）
+        if num >= 1980:
+            return ctx
+        # 当集数与提取的数字相同时，该数字是集号而非季号
+        # 例: "淫邪の熾鑼 2" 中 "2" 是第2集，不是第2季
+        # 但仍需从剧名中移除此数字，避免剧名包含集号后缀
+        if ctx.episode == num:
+            ctx.series_name = base
+            return ctx
+        ctx.series_name = base
+        ctx.season = num
+        ctx.matched_patterns.append(f"{self.name}:season_from_name")
         return ctx
 
     def _extract_from_cleaned(self, cleaned: str) -> str | None:

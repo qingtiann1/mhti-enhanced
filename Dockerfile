@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     gnupg \
+    dos2unix \
     && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
     | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
     && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
@@ -36,7 +37,7 @@ COPY static/ ./static/
 # Copy Caddy config and startup script
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY start.sh /app/start.sh
-RUN chmod +x /app/start.sh
+RUN dos2unix /app/start.sh && chmod +x /app/start.sh
 
 # Data directory for scraper database
 VOLUME ["/app/data"]

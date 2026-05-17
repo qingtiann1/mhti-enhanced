@@ -100,8 +100,8 @@ class NFOService:
             outline_elem = ET.SubElement(root, "outline")
             outline_elem.text = data.plot
 
-        # lockdata
-        self._add_element(root, "lockdata", "false")
+        # lockdata — true prevents Emby/Jellyfin from overwriting
+        self._add_element(root, "lockdata", "true" if data.lockdata else "false")
 
         # dateadded
         self._add_element(root, "dateadded", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -131,6 +131,9 @@ class NFOService:
         if data.premiered is not None:
             self._add_element(root, "premiered", data.premiered.isoformat())
             self._add_element(root, "releasedate", data.premiered.isoformat())
+
+        # studio
+        self._add_element(root, "studio", data.studio)
 
         # genres
         for genre in data.genres:
@@ -253,6 +256,7 @@ class NFOService:
             genres=series.genres,
             premiered=series.first_air_date,
             status=series.status,
+            lockdata=False,
         )
 
     def season_from_tmdb(self, season: TMDBSeason) -> SeasonNFO:

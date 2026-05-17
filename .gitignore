@@ -10,8 +10,6 @@ package-lock.json
 flare-adapter/
 hanime-server/
 jd_assistant/
-static/
-test*
 patch_*.py
 step1_probe.py
 需求.txt
@@ -19,4 +17,11 @@ step1_probe.py
 .idea/
 *.log
 index.js
-start.sh
+.claude/
+.playwright-mcp/
+*.tar
+check_*.py
+download_posters*.py
+export_data.py
+fix_all_posters.py
+deploy_*.py

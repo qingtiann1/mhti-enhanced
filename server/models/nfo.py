@@ -17,6 +17,8 @@ class TVShowNFO(BaseModel):
     genres: list[str] = []
     premiered: date | None = None
     status: str | None = None
+    lockdata: bool = True
+    studio: str | None = None
 
 
 class SeasonNFO(BaseModel):

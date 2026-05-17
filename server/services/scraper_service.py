@@ -888,14 +888,24 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 aired = date.fromisoformat(detail.upload_date[:10])
             except (ValueError, IndexError):
                 pass
+        # Clean original_title: strip bracketed tags (字幕/翻訳/Chinese/etc.)
+        import re
+        clean_title = re.sub(
+            r'\s*\[[^\]]*(?:字幕|翻訳|Chinese|English|Subtitle)[^\]]*\]',
+            '',
+            detail.title or '',
+            flags=re.IGNORECASE
+        ).strip()
         nfo_data = TVShowNFO(
             title=series_name,
-            original_title=detail.title,
+            original_title=clean_title or detail.title,
             sort_title=series_name,
             plot=plot,
             genres=genres,
             year=year,
             premiered=aired,
+            lockdata=True,
+            studio=detail.studio.name if detail.studio else None,
         )
         return self.nfo_service.generate_tvshow_nfo(nfo_data)
 
@@ -917,14 +927,53 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         return self.nfo_service.generate_season_nfo(nfo_data)
 
     async def _download_hanime_poster(self, cover_url: str, dest_dir: str) -> None:
-        """Download poster image from hanime/Bangumi CDN."""
-        import os
+        """Download poster image from hanime/Bangumi CDN with proxy, retry, and proper headers."""
+        import os, asyncio
+
         dest_path = os.path.join(dest_dir, "poster.jpg")
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.get(cover_url)
-            resp.raise_for_status()
-            with open(dest_path, "wb") as f:
-                f.write(resp.content)
+        if os.path.exists(dest_path):
+            return
+
+        # Resolve proxy URL: config_service first, then env HTTP_PROXY
+        proxy_url = None
+        try:
+            proxy_config = await self.config_service.get_proxy_config()
+            proxy_url = proxy_config.get_url()
+        except Exception:
+            pass
+        if not proxy_url:
+            proxy_url = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://hanime1.me/",
+        }
+
+        last_error = None
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=30.0,
+                    follow_redirects=True,
+                    proxy=proxy_url,
+                    headers=headers,
+                ) as client:
+                    resp = await client.get(cover_url)
+                    resp.raise_for_status()
+                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    with open(dest_path, "wb") as f:
+                        f.write(resp.content)
+                    return
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+
+        raise last_error
 
     # ── End Hanime helpers ──────────────────────────────────────────
 
@@ -1328,6 +1377,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             plot=result.summary or "",
             year=year,
             premiered=aired,
+            lockdata=True,
         )
         return self.nfo_service.generate_tvshow_nfo(nfo_data)
 

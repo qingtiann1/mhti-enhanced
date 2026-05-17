@@ -10,6 +10,7 @@ class WatcherMode(str, Enum):
 
     REALTIME = "realtime"  # 实时模式：监听文件系统事件
     COMPAT = "compat"  # 兼容模式：定时轮询
+    INTERVAL = "interval"  # 间隔模式：定时轮询（自定义间隔）
 
 
 class WatcherConfig(BaseModel):

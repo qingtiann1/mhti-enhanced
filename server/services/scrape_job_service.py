@@ -478,6 +478,13 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 "file_path": job.file_path,
                 "dest_path": result.dest_path,
             })
+            # 通知 Emby 刷新媒体库
+            try:
+                from server.core.container import get_emby_service
+                emby_svc = get_emby_service()
+                await emby_svc.notify_refresh()
+            except Exception:
+                pass
         elif result.status == ScrapeStatus.NEED_SELECTION:
             # 需要用户选择
             conflict_data = {

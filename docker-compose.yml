@@ -1,0 +1,40 @@
+# MHTI Enhanced - One-Click Docker Deployment
+# =============================================
+# Usage:
+#   docker compose up -d
+#
+# Or with custom paths:
+#   MEDIA_DIR=/path/to/media OUTPUT_DIR=/path/to/output docker compose up -d
+
+services:
+  mhti:
+    image: ghcr.io/qingtiann1/mhti-enhanced:latest
+    container_name: mhti
+    restart: unless-stopped
+    mem_limit: 512M
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - DATA_DIR=/app/data
+      # Proxy settings (optional - remove if not needed)
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1}
+      # External API integrations (optional)
+      - HANIME_API_URL=${HANIME_API_URL:-}
+      - BANGUMI_ACCESS_TOKEN=${BANGUMI_ACCESS_TOKEN:-}
+    volumes:
+      # Required: MHTI database and config storage
+      - ${DATA_DIR:-./data}:/app/data
+      # Required: Media source directory (read-only)
+      - ${MEDIA_DIR:-/path/to/media}:/media:ro
+      # Required: Output directory for scraped content
+      - ${OUTPUT_DIR:-/path/to/output}:/output
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

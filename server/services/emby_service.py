@@ -335,3 +335,40 @@ class EmbyService:
 
         logger.info(f"Emby 未找到集: S{season:02d}E{episode:02d}")
         return None
+
+    async def notify_refresh(self, library_id: str = "") -> bool:
+        """通知 Emby 刷新媒体库（刮削完成后调用）。
+
+        Args:
+            library_id: 要刷新的媒体库 ID，为空则刷新全部库
+
+        Returns:
+            是否成功发送刷新请求
+        """
+        config = await self.get_config()
+        if not config.enabled or not config.server_url or not config.api_key:
+            logger.debug("Emby 未配置或未启用，跳过刷新通知")
+            return False
+
+        try:
+            async with self._get_client(config) as client:
+                if library_id:
+                    url = f"/Items/{library_id}/Refresh"
+                    params = {"Recursive": "true"}
+                else:
+                    url = "/Library/Refresh"
+                    params = {}
+
+                resp = await client.post(url, params=params)
+                if resp.status_code in (200, 204):
+                    logger.info(f"Emby 刷新通知成功 (library={library_id or 'all'})")
+                    return True
+                else:
+                    logger.warning(
+                        f"Emby 刷新通知失败: HTTP {resp.status_code} "
+                        f"(library={library_id or 'all'})"
+                    )
+                    return False
+        except Exception as e:
+            logger.warning(f"Emby 刷新通知异常: {e}")
+            return False

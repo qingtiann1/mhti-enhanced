@@ -926,8 +926,14 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         )
         return self.nfo_service.generate_season_nfo(nfo_data)
 
-    async def _download_hanime_poster(self, cover_url: str, dest_dir: str) -> None:
-        """Download poster image from hanime/Bangumi CDN with proxy, retry, and proper headers."""
+    async def _download_hanime_poster(
+        self, cover_url: str, dest_dir: str, video_id: str = ""
+    ) -> None:
+        """Download poster image from hanime/Bangumi CDN.
+
+        For hanime sources with video_id, tries hanime-server API proxy first
+        (which can reach the CDN), then falls back to direct download.
+        """
         import os, asyncio
 
         dest_path = os.path.join(dest_dir, "poster.jpg")
@@ -953,25 +959,38 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             "Referer": "https://hanime1.me/",
         }
 
+        # Build download URLs to try
+        urls = []
+        if video_id:
+            hanime_api = os.environ.get("HANIME_API_URL", "")
+            if hanime_api:
+                urls.append(f"{hanime_api}/api/downloads/cover/{video_id}")
+        urls.append(cover_url)
+
         last_error = None
-        for attempt in range(3):
-            try:
-                async with httpx.AsyncClient(
-                    timeout=30.0,
-                    follow_redirects=True,
-                    proxy=proxy_url,
-                    headers=headers,
-                ) as client:
-                    resp = await client.get(cover_url)
-                    resp.raise_for_status()
-                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                    with open(dest_path, "wb") as f:
-                        f.write(resp.content)
-                    return
-            except Exception as e:
-                last_error = e
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
+        for url in urls:
+            for attempt in range(3):
+                try:
+                    # Don't use proxy for hanime-server API (it's on host network)
+                    use_proxy = proxy_url if url == cover_url else None
+                    async with httpx.AsyncClient(
+                        timeout=30.0,
+                        follow_redirects=True,
+                        proxy=use_proxy,
+                        headers=headers,
+                    ) as client:
+                        resp = await client.get(url)
+                        resp.raise_for_status()
+                        if len(resp.content) < 500:
+                            raise ValueError(f"Content too small: {len(resp.content)} bytes")
+                        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                        with open(dest_path, "wb") as f:
+                            f.write(resp.content)
+                        return
+                except Exception as e:
+                    last_error = e
+                    if attempt < 2:
+                        await asyncio.sleep(2 ** attempt)
 
         raise last_error
 
@@ -1117,7 +1136,10 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             download_config = await self._get_effective_download_config(request.advanced_settings)
             if download_config["download_poster"] and detail.cover_url:
                 try:
-                    await self._download_hanime_poster(detail.cover_url, str(metadata_series_folder))
+                    await self._download_hanime_poster(
+                        detail.cover_url, str(metadata_series_folder),
+                        video_id=detail.video_id,
+                    )
                     image_step.logs.append(ScrapeLogEntry(message="封面图下载完成"))
                 except Exception as e:
                     image_step.logs.append(ScrapeLogEntry(message=f"封面图下载失败: {e}", level=LogLevel.WARNING))

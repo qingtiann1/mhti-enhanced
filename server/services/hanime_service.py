@@ -72,10 +72,26 @@ class HanimeService:
         """Extract series name from video detail.
 
         Uses subtitle (Chinese name) if available, otherwise title (Japanese name).
-        Strips episode numbers and whitespace.
+        Strips episode numbers, volume markers, season markers, and whitespace.
         """
-        # subtitle is usually cleaner for series name
         name = detail.subtitle or detail.title
+        name = name.strip()
+
+        # Strip episode/volume/season markers from the end
+        import re
+        patterns = [
+            r"\s+第?\s*\d+\s*[話集话回章弾幕期季卷冊]$",  # 第1話, 第2集, 第3期
+            r"\s+\d+\s*$",                              # " 1", " 12"
+            r"\s+[Ff]it\.?\s*\d+\s*$",                  # " Fit. 1"
+            r"\s+[Vv]ol\.?\s*\d+\s*$",                  # " Vol. 1"
+            r"\s+[Ee][Pp]\.?\s*\d+\s*$",               # " EP. 1"
+            r"\s+#\s*\d+\s*$",                          # " #1"
+            r"\s+[Ss]eason\s*\d+\s*$",                  # " Season 1"
+            r"\s+Season\s*\d+\s*$",                     # "Season 1" (no leading space)
+        ]
+        for pat in patterns:
+            name = re.sub(pat, "", name)
+
         return name.strip()
 
     def get_episode_number(self, detail: HanimeVideoDetail) -> int:

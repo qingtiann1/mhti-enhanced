@@ -1029,7 +1029,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             await notify()
             return None
 
-        series_name = self.hanime_service.get_series_name(detail)
+        series_name = parsed.series_name or self.hanime_service.get_series_name(detail)
         episode_num = parsed.episode or self.hanime_service.get_episode_number(detail)
         season_num = parsed.season or 1
 
@@ -1243,7 +1243,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             await notify()
             return None
 
-        bgm_title = self.bangumi_service.get_title(best)
+        bgm_title = parsed.series_name or self.bangumi_service.get_title(best)
         bgm_step.logs.append(ScrapeLogEntry(message=f"Bangumi 匹配: [{best.id}] {bgm_title}"))
         await notify()
 

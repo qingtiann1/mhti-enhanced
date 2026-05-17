@@ -1142,7 +1142,32 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     )
                     image_step.logs.append(ScrapeLogEntry(message="封面图下载完成"))
                 except Exception as e:
-                    image_step.logs.append(ScrapeLogEntry(message=f"封面图下载失败: {e}", level=LogLevel.WARNING))
+                    image_step.logs.append(ScrapeLogEntry(
+                        message=f"Hanime 封面失败: {e}，尝试 Bangumi 回退",
+                        level=LogLevel.WARNING,
+                    ))
+                    # Fallback: try Bangumi cover
+                    try:
+                        title = detail.title or parsed.series_name
+                        bgm_results = await self.bangumi_service.search_anime(title, max_results=3)
+                        if bgm_results:
+                            bgm_cover = self.bangumi_service.get_cover_url(bgm_results[0])
+                            if bgm_cover:
+                                await self._download_hanime_poster(
+                                    bgm_cover, str(metadata_series_folder),
+                                )
+                                image_step.logs.append(ScrapeLogEntry(
+                                    message="封面图下载完成 (Bangumi 回退)"
+                                ))
+                            else:
+                                raise ValueError("Bangumi 封面 URL 为空")
+                        else:
+                            raise ValueError("Bangumi 搜索无结果")
+                    except Exception as bgm_e:
+                        image_step.logs.append(ScrapeLogEntry(
+                            message=f"封面图下载失败 (Hanime+Bangumi): {bgm_e}",
+                            level=LogLevel.WARNING,
+                        ))
             await notify()
 
         except Exception as e:

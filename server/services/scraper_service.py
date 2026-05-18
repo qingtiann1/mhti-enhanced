@@ -113,6 +113,15 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         self.bangumi_service = bangumi_service or BangumiService(access_token=bangumi_access_token)
         self.translation_service = translation_service or TranslationService()
 
+    async def _get_output_dir(self, request_output_dir: str | None = None) -> str:
+        """Get effective output directory, falling back to organize config."""
+        if request_output_dir:
+            return request_output_dir
+        org = await self.config_service.get_organize_config()
+        if org.organize_dir:
+            return org.organize_dir
+        return ""
+
     async def preview(self, file_path: str) -> ScrapePreview:
         """Preview scrape operation without executing.
 
@@ -458,6 +467,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         scrape_logs.append(move_step)
         try:
             year = series.first_air_date.year if series.first_air_date else None
+            effective_output_dir = await self._get_output_dir(request.output_dir)
 
             rename_request = RenameRequest(
                 source_path=file_path,
@@ -465,12 +475,12 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 season=season_num,
                 episode=episode_num,
                 year=year,
-                output_dir=request.output_dir,
+                output_dir=effective_output_dir,
                 link_mode=request.link_mode,
             )
 
             move_step.logs.append(ScrapeLogEntry(message=f"源文件: {file_path}"))
-            move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {request.output_dir or '原目录'}"))
+            move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {effective_output_dir or '原目录'}"))
             move_step.logs.append(ScrapeLogEntry(message=f"整理模式: {mode_name}"))
             await notify_log_update()
 
@@ -717,6 +727,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         await notify_log_update()
         try:
             year = series.first_air_date.year if series.first_air_date else None
+            effective_output_dir = await self._get_output_dir(request.output_dir)
 
             rename_request = RenameRequest(
                 source_path=file_path,
@@ -724,12 +735,12 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 season=request.season,
                 episode=request.episode,
                 year=year,
-                output_dir=request.output_dir,
+                output_dir=effective_output_dir,
                 link_mode=request.link_mode,
             )
 
             move_step.logs.append(ScrapeLogEntry(message=f"源文件: {path.name}"))
-            move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {request.output_dir or '原目录'}"))
+            move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {effective_output_dir or '原目录'}"))
             move_step.logs.append(ScrapeLogEntry(message=f"整理模式: {mode_name}"))
             await notify_log_update()
 
@@ -1121,17 +1132,18 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         try:
             # 不传年份：Hanime 每集上传日期不同会导致同名系列分裂到不同文件夹
             # NFO 中的年份仍由 Hanime API 数据独立提供
+            effective_output_dir = await self._get_output_dir(request.output_dir)
             rename_request = RenameRequest(
                 source_path=file_path,
                 title=series_name,
                 season=season_num,
                 episode=episode_num,
                 year=None,
-                output_dir=request.output_dir,
+                output_dir=effective_output_dir,
                 link_mode=request.link_mode,
             )
             move_step.logs.append(ScrapeLogEntry(message=f"源文件: {file_path}"))
-            move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {request.output_dir or '原目录'}"))
+            move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {effective_output_dir or '原目录'}"))
             await notify()
 
             rename_result = self.rename_service.execute_rename(rename_request)
@@ -1355,17 +1367,18 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         scrape_logs.append(move_step)
         try:
             year = self.bangumi_service.get_year(best)
+            effective_output_dir = await self._get_output_dir(request.output_dir)
             rename_request = RenameRequest(
                 source_path=file_path,
                 title=bgm_title,
                 season=season_num,
                 episode=episode_num,
                 year=year,
-                output_dir=request.output_dir,
+                output_dir=effective_output_dir,
                 link_mode=request.link_mode,
             )
             move_step.logs.append(ScrapeLogEntry(message=f"源文件: {file_path}"))
-            move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {request.output_dir or '原目录'}"))
+            move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {effective_output_dir or '原目录'}"))
             await notify()
 
             rename_result = self.rename_service.execute_rename(rename_request)

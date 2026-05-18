@@ -122,34 +122,27 @@ class SeriesNamePlugin(ParserPlugin):
         return ctx
 
     def _extract_season_from_series_name(self, ctx: ParseContext) -> ParseContext:
-        """从剧名末尾提取季节数字。
+        """从剧名末尾提取并清理数字后缀。
 
-        仅当集数已通过其他插件检知时才执行，避免将集数误判为季数。
-        例: "自宅警备员2" + 已有episode=1 → 剧名="自宅警备员", season=2
+        仅当集数已通过其他插件检知时才执行。
+        例: "自宅警备员2" + 已有episode=1 → 剧名="自宅警备员"
              "Floating Material 1" + 无episode → 不处理
         """
         name = ctx.series_name
-        # 匹配末尾数字：空格+数字 或 紧接数字
         m = re.match(r"^(.+?)\s*(\d{1,2})$", name)
         if not m:
             return ctx
         base = m.group(1).strip()
         num = int(m.group(2))
-        # 基本剧名必须有意义，数字范围 1-12
         if len(base) < 2 or not (1 <= num <= 12):
             return ctx
-        # 排除明显的年份模式（剧名末尾是四位数年份的情况）
         if num >= 1980:
             return ctx
-        # 当集数与提取的数字相同时，该数字是集号而非季号
-        # 例: "淫邪の熾鑼 2" 中 "2" 是第2集，不是第2季
-        # 但仍需从剧名中移除此数字，避免剧名包含集号后缀
-        if ctx.episode == num:
-            ctx.series_name = base
-            return ctx
+        # 从剧名中移除末尾数字后缀（可能是集号、季号、或标题一部分）
+        # 不以此推断 season，避免同一剧集的不同集被分到不同季文件夹。
+        # season 应由明确的标记（S01E01、第1季）或 API 元数据确定。
         ctx.series_name = base
-        ctx.season = num
-        ctx.matched_patterns.append(f"{self.name}:season_from_name")
+        ctx.matched_patterns.append(f"{self.name}:cleaned_trailing_number")
         return ctx
 
     def _extract_from_cleaned(self, cleaned: str) -> str | None:

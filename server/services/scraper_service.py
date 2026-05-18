@@ -122,6 +122,13 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             return org.organize_dir
         return ""
 
+    async def _get_link_mode(self, request_link_mode: OrganizeMode | None = None) -> OrganizeMode | None:
+        """Get effective link mode, falling back to organize config's organize_mode."""
+        if request_link_mode is not None:
+            return request_link_mode
+        org = await self.config_service.get_organize_config()
+        return org.organize_mode
+
     async def preview(self, file_path: str) -> ScrapePreview:
         """Preview scrape operation without executing.
 
@@ -462,7 +469,8 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             return result
 
         # Step 7: Move file using RenameService
-        mode_name = _get_mode_name(request.link_mode)
+        effective_link_mode = await self._get_link_mode(request.link_mode)
+        mode_name = _get_mode_name(effective_link_mode)
         move_step = ScrapeLogStep(name=f"{mode_name}文件", logs=[])
         scrape_logs.append(move_step)
         try:
@@ -476,7 +484,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 episode=episode_num,
                 year=year,
                 output_dir=effective_output_dir,
-                link_mode=request.link_mode,
+                link_mode=effective_link_mode,
             )
 
             move_step.logs.append(ScrapeLogEntry(message=f"源文件: {file_path}"))
@@ -721,7 +729,8 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             return result
 
         # Step 3: 移动文件
-        mode_name = _get_mode_name(request.link_mode)
+        effective_link_mode = await self._get_link_mode(request.link_mode)
+        mode_name = _get_mode_name(effective_link_mode)
         move_step = ScrapeLogStep(name=f"{mode_name}文件", logs=[])
         scrape_logs.append(move_step)
         await notify_log_update()
@@ -736,7 +745,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 episode=request.episode,
                 year=year,
                 output_dir=effective_output_dir,
-                link_mode=request.link_mode,
+                link_mode=effective_link_mode,
             )
 
             move_step.logs.append(ScrapeLogEntry(message=f"源文件: {path.name}"))
@@ -1126,7 +1135,8 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         await notify()
 
         # Move file
-        mode_name = _get_mode_name(request.link_mode)
+        effective_link_mode = await self._get_link_mode(request.link_mode)
+        mode_name = _get_mode_name(effective_link_mode)
         move_step = ScrapeLogStep(name=f"{mode_name}文件", logs=[])
         scrape_logs.append(move_step)
         try:
@@ -1140,7 +1150,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 episode=episode_num,
                 year=None,
                 output_dir=effective_output_dir,
-                link_mode=request.link_mode,
+                link_mode=effective_link_mode,
             )
             move_step.logs.append(ScrapeLogEntry(message=f"源文件: {file_path}"))
             move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {effective_output_dir or '原目录'}"))
@@ -1362,7 +1372,8 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         await notify()
 
         # Move/copy file
-        mode_name = _get_mode_name(request.link_mode)
+        effective_link_mode = await self._get_link_mode(request.link_mode)
+        mode_name = _get_mode_name(effective_link_mode)
         move_step = ScrapeLogStep(name=f"{mode_name}文件", logs=[])
         scrape_logs.append(move_step)
         try:
@@ -1375,7 +1386,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 episode=episode_num,
                 year=year,
                 output_dir=effective_output_dir,
-                link_mode=request.link_mode,
+                link_mode=effective_link_mode,
             )
             move_step.logs.append(ScrapeLogEntry(message=f"源文件: {file_path}"))
             move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {effective_output_dir or '原目录'}"))

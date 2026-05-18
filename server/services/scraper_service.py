@@ -1062,9 +1062,25 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             await notify()
             return None
 
-        series_name = parsed.series_name or self.hanime_service.get_series_name(detail)
-        episode_num = parsed.episode or self.hanime_service.get_episode_number(detail)
+        # Hanime API 优先：API 知道正确的剧集分组，解析器仅作回退
+        api_series_name = self.hanime_service.get_series_name(detail)
+        series_name = api_series_name or parsed.series_name
+        episode_num = self.hanime_service.get_episode_number(detail) or parsed.episode or 1
         season_num = parsed.season or 1
+
+        # 从 API 剧名中提取嵌入式季号（如 "自宅警备员2" → season=2）
+        if api_series_name and season_num == 1:
+            import re
+            sm = re.match(r"^(.+?)\s*(\d{1,2})$", api_series_name)
+            if sm:
+                base = sm.group(1).strip()
+                num = int(sm.group(2))
+                if len(base) >= 2 and 1 <= num <= 12 and num < 1980 and episode_num != num:
+                    series_name = base
+                    season_num = num
+                    hanime_step.logs.append(ScrapeLogEntry(
+                        message=f"从 Hanime 剧名提取季号: Season {season_num}"
+                    ))
 
         # 尝试通过 TMDB 获取分季信息
         if parsed.season is None:
@@ -1103,13 +1119,14 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         move_step = ScrapeLogStep(name=f"{mode_name}文件", logs=[])
         scrape_logs.append(move_step)
         try:
-            year = self.hanime_service.get_year(detail)
+            # 不传年份：Hanime 每集上传日期不同会导致同名系列分裂到不同文件夹
+            # NFO 中的年份仍由 Hanime API 数据独立提供
             rename_request = RenameRequest(
                 source_path=file_path,
                 title=series_name,
                 season=season_num,
                 episode=episode_num,
-                year=year,
+                year=None,
                 output_dir=request.output_dir,
                 link_mode=request.link_mode,
             )

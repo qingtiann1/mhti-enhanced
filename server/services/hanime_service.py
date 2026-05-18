@@ -72,7 +72,8 @@ class HanimeService:
         """Extract series name from video detail.
 
         Uses subtitle (Chinese name) if available, otherwise title (Japanese name).
-        Strips episode numbers, volume markers, season markers, and whitespace.
+        Strips episode numbers, volume markers, season markers, episode-variant
+        suffixes (・color, 【character】), and whitespace.
         """
         name = detail.subtitle or detail.title
         name = name.strip()
@@ -80,27 +81,43 @@ class HanimeService:
         # Strip episode/volume/season markers from the end
         import re
         patterns = [
-            r"\s+第?\s*\d+\s*[話集话回章弾幕期季卷冊]$",  # 第1話, 第2集, 第3期
-            r"\s+\d+\s*$",                              # " 1", " 12"
+            r"\s+第?\s*\d+\s*[話集话回章弾幕期季卷冊]$",  # 第1話, 第2集
             r"\s+[Ff]it\.?\s*\d+\s*$",                  # " Fit. 1"
             r"\s+[Vv]ol\.?\s*\d+\s*$",                  # " Vol. 1"
             r"\s+[Ee][Pp]\.?\s*\d+\s*$",               # " EP. 1"
             r"\s+#\s*\d+\s*$",                          # " #1"
             r"\s+[Ss]eason\s*\d+\s*$",                  # " Season 1"
-            r"\s+Season\s*\d+\s*$",                     # "Season 1" (no leading space)
+            r"\s+\d+\s*$",                              # " 1", " 12"
+            # Strip trailing 1-2 digit season/episode number (no leading space)
+            # e.g., "金发甜心2" → "金发甜心", "自宅警备员2" → "自宅警备员"
+            # Uses negative lookbehind to avoid stripping year digits
+            r"(?<!\d)\d{1,2}\s*$",
         ]
         for pat in patterns:
             name = re.sub(pat, "", name)
 
+        # Strip 【...】bracket suffix (episode/character markers)
+        # e.g., "SISTERS 〜夏日的最后一天〜【千夏①】" → "SISTERS 〜夏日的最后一天〜"
+        name = re.sub(r"\s*【[^】]+】\s*", "", name)
+
+        # Strip trailing ・{single-char} color/numeral suffix
+        # e.g., "不洁之星・紫" → "不洁之星", "夜勤病棟・参" → "夜勤病棟"
+        # Multi-char suffixes after ・ are kept (they indicate different sub-series,
+        # e.g., "妻NTR・零" vs "妻NTR・凌辱轮回")
+        name = re.sub(
+            r"\s*・\s*([赤紫青黒白紅藍緑金銀朱碧蒼翠紅丹紺藍参弐零壱])$",
+            r"",
+            name,
+        )
+
         return name.strip()
 
-    def get_episode_number(self, detail: HanimeVideoDetail) -> int:
+    def get_episode_number(self, detail: HanimeVideoDetail) -> int | None:
         """Extract episode number from video detail.
 
-        Looks at the title for episode numbers, defaults to 1.
+        Returns None when no pattern matches, so the caller can fall back to filename-based parsing.
         """
         title = detail.title or ""
-        # Match patterns like " 1", "第1話", "第1集", "Fit.1", "Vol.1", etc.
         import re
         patterns = [
             r"\s+(\d+)\s*$",
@@ -114,7 +131,7 @@ class HanimeService:
             m = re.search(pat, title)
             if m:
                 return int(m.group(1))
-        return 1
+        return None
 
     def get_genres(self, detail: HanimeVideoDetail) -> list[str]:
         """Extract genres as list of tag names."""

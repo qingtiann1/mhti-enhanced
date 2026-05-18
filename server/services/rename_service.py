@@ -130,16 +130,9 @@ class RenameService:
             if create_backup:
                 backup_path = self._create_backup(source_path)
 
-            # Check if destination already exists
+            # Overwrite existing destination file (user prefers latest version)
             if dest_path.exists() and dest_path != source_path:
-                logger.warning(f"目标文件已存在: {dest_path}")
-                return RenameResult(
-                    source_path=str(source_path),
-                    dest_path=str(dest_path),
-                    success=False,
-                    error=f"Destination file already exists: {dest_path}",
-                    backup_path=backup_path,
-                )
+                logger.info(f"目标文件已存在，将被覆盖: {dest_path}")
 
             # Move/rename the file based on link_mode
             logger.info(f"execute_rename: 正在处理文件，模式: {request.link_mode or 'move(默认)'}...")

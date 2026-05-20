@@ -1075,6 +1075,41 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             pass
         return None
 
+    async def _normalize_series_name_via_tmdb(self, series_name: str) -> str | None:
+        """通过 TMDB 搜索归一化剧集名称，避免同系列因副标题差异而碎片化。
+
+        从 hanime/bangumi 回退路径获取 series name 后，尝试用 TMDB 搜索
+        来统一命名。例如 "White Blue ～白衣的后悔～" → 搜索 "White Blue" →
+        TMDB 返回 "White Blue"，所有分集使用相同的输出目录。
+
+        Returns:
+            TMDB 规范化的剧集名称，或 None（TMDB 搜索失败或无匹配）
+        """
+        import re
+        try:
+            # Strip ～xxx～ subtitle suffix to get base name
+            base_name = re.sub(r'\s*[～~]\s*.+$', '', series_name).strip()
+            if not base_name:
+                return None
+
+            search_name = base_name if base_name != series_name else series_name
+            search_response = await self.tmdb_service.search_series_by_api(search_name)
+            adult_results = [r for r in search_response.results if r.adult]
+
+            if adult_results:
+                return adult_results[0].name
+
+            # Fallback: try the original name if base didn't work
+            if search_name != series_name:
+                search_response = await self.tmdb_service.search_series_by_api(series_name)
+                adult_results = [r for r in search_response.results if r.adult]
+                if adult_results:
+                    return adult_results[0].name
+
+        except Exception:
+            pass
+        return None
+
     async def _scrape_via_hanime(
         self,
         file_path: str,
@@ -1143,6 +1178,15 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
         hanime_step.logs.append(ScrapeLogEntry(message=f"Hanime 匹配: {series_name} S{season_num:02d}E{episode_num:02d}"))
         await notify()
+
+        # TMDB 归一化：避免同系列因 hanime 副标题不同而分到多个输出目录
+        normalized = await self._normalize_series_name_via_tmdb(series_name)
+        if normalized and normalized != series_name:
+            hanime_step.logs.append(ScrapeLogEntry(
+                message=f"TMDB 归一化: '{series_name}' → '{normalized}'"
+            ))
+            series_name = normalized
+            await notify()
 
         # Translate description to Chinese if needed
         if detail.description:
@@ -1384,6 +1428,15 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 bgm_step.logs.append(ScrapeLogEntry(
                     message=f"TMDB 分季: Season {season_num}"
                 ))
+
+        # TMDB 归一化：统一同系列不同分集的输出目录
+        normalized = await self._normalize_series_name_via_tmdb(bgm_title)
+        if normalized and normalized != bgm_title:
+            bgm_step.logs.append(ScrapeLogEntry(
+                message=f"TMDB 归一化: '{bgm_title}' → '{normalized}'"
+            ))
+            bgm_title = normalized
+            await notify()
 
         # Generate NFO from Bangumi data
         nfo_step = ScrapeLogStep(name="生成 NFO (Bangumi)", logs=[])

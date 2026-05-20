@@ -87,6 +87,9 @@ class HanimeService:
             r"\s+[Ee][Pp]\.?\s*\d+\s*$",               # " EP. 1"
             r"\s+#\s*\d+\s*$",                          # " #1"
             r"\s+[Ss]eason\s*\d+\s*$",                  # " Season 1"
+            r"\s+Karte\.?\s*\d+(?:\.\d+)?\s*$",        # " Karte.1", " Karte.10.5"
+            r"\s+Experiment\.?\s*\d+\s*$",             # " Experiment.3"
+            r"\s+ope[._]\s*\d+\s*$",                   # " ope_05", " ope.1"
             r"\s+\d+\s*$",                              # " 1", " 12"
             # Strip trailing 1-2 digit season/episode number (no leading space)
             # e.g., "金发甜心2" → "金发甜心", "自宅警备员2" → "自宅警备员"

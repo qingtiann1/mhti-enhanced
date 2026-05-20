@@ -1075,36 +1075,69 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             pass
         return None
 
+    @staticmethod
+    def _clean_series_name(name: str) -> str:
+        """剥离剧集名称中的分集特有后缀，提取系列基础名称。
+
+        处理顺序很重要：先剥外层标记（年份、括号），再剥描述性后缀，
+        最后剥分集/卷号标记。
+        """
+        import re
+        n = name.strip()
+        # 年份后缀 (2017)
+        n = re.sub(r'\s*\(\d{4}\)\s*$', '', n)
+        # 方括号后缀 [アニメEND] [原作END]
+        n = re.sub(r'\s*\[.*?\]\s*$', '', n)
+        # 破折号描述后缀 -xxx- 或 —xxx—
+        n = re.sub(r'\s*[-–—]\s*.+?[-–—]?\s*$', '', n)
+        # ～xxx～ 副标题
+        n = re.sub(r'\s*[～~]\s*.+$', '', n)
+        # DIRECTOR版 / 特典
+        n = re.sub(r'\s+\d*\s*DIRECTOR版\s*$', '', n)
+        n = re.sub(r'\s+特典\s*$', '', n)
+        # ・ 单字后缀（卷号标记，如 "・零" "・参" "・黒"）
+        n = re.sub(r'\s*・\s*.$', '', n)
+        # 集话标记 第N話/第N话 + 可能的后续描述
+        n = re.sub(r'\s+第\d+[話話话]\s*.*$', '', n)
+        # 末尾独立数字（季号/卷号），如 " 2" " 12"
+        n = re.sub(r'\s+\d{1,2}\s*$', '', n)
+        return n.strip().rstrip('・·-–—').strip()
+
     async def _normalize_series_name_via_tmdb(self, series_name: str) -> str | None:
         """通过 TMDB 搜索归一化剧集名称，避免同系列因副标题差异而碎片化。
 
-        从 hanime/bangumi 回退路径获取 series name 后，尝试用 TMDB 搜索
-        来统一命名。例如 "White Blue ～白衣的后悔～" → 搜索 "White Blue" →
-        TMDB 返回 "White Blue"，所有分集使用相同的输出目录。
+        先用 _clean_series_name 清洗分集特有后缀，再尝试 TMDB 确认。
+        即使 TMDB 未收录，只要清洗后的名称不同（去掉了分集标记），
+        也返回清洗名——保证同系列各分集使用相同的输出目录。
 
         Returns:
-            TMDB 规范化的剧集名称，或 None（TMDB 搜索失败或无匹配）
+            归一化的剧集名称，或 None（清洗后无变化且 TMDB 无匹配）
         """
         import re
         try:
-            # Strip ～xxx～ subtitle suffix to get base name
-            base_name = re.sub(r'\s*[～~]\s*.+$', '', series_name).strip()
-            if not base_name:
+            cleaned = self._clean_series_name(series_name)
+            if not cleaned:
                 return None
 
-            search_name = base_name if base_name != series_name else series_name
-            search_response = await self.tmdb_service.search_series_by_api(search_name)
+            # 尝试 TMDB 搜索清洗后的名称
+            search_response = await self.tmdb_service.search_series_by_api(cleaned)
             adult_results = [r for r in search_response.results if r.adult]
 
             if adult_results:
-                return adult_results[0].name
+                # TMDB 确认：使用清洗名（保留用户语言，不用 TMDB 英文名）
+                return cleaned
 
-            # Fallback: try the original name if base didn't work
-            if search_name != series_name:
-                search_response = await self.tmdb_service.search_series_by_api(series_name)
-                adult_results = [r for r in search_response.results if r.adult]
-                if adult_results:
-                    return adult_results[0].name
+            # TMDB 无匹配但清洗后名称不同 → 仍使用清洗名
+            # 因为去掉的是分集特有标记（年份/括号/副标题等），
+            # 不影响系列识别，能保证同名系列归入同一目录
+            if cleaned != series_name:
+                return cleaned
+
+            # 清洗后无变化且 TMDB 无匹配 → 尝试原名称搜索
+            search_response = await self.tmdb_service.search_series_by_api(series_name)
+            adult_results = [r for r in search_response.results if r.adult]
+            if adult_results:
+                return cleaned
 
         except Exception:
             pass

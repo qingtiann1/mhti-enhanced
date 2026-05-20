@@ -391,12 +391,38 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         # Determine season and episode
         season_num = parsed.season if parsed.season is not None else 1
         episode_num = parsed.episode if parsed.episode is not None else 1
+        season_corrected = False
+
+        # 使用 TMDB 季结构验证季/集分配
+        # 解决文件名末尾数字被误当成集号的问题：
+        # 例如 "人心遊戯2.mp4" → parsed.episode=2, 但 TMDB Season 1 只有 1 集
+        # → "2" 实际是季号/卷号, 纠正为 S02E01
+        if parsed.season is None and episode_num > 1:
+            real_seasons = [s for s in (series.seasons or []) if s.season_number > 0]
+            if len(real_seasons) > 1:
+                s1 = next((s for s in real_seasons if s.season_number == 1), None)
+                s1_capacity = s1.episode_count if s1 and s1.episode_count else 0
+                has_matching_season = any(
+                    s.season_number == episode_num for s in real_seasons
+                )
+                if has_matching_season and 0 < s1_capacity < episode_num:
+                    logger.info(
+                        f"纠正季/集混淆: S01E{episode_num:02d} → S{episode_num:02d}E01 "
+                        f"(TMDB Season 1 仅有 {s1_capacity} 集)"
+                    )
+                    season_num = episode_num
+                    episode_num = 1
+                    season_corrected = True
 
         # 记录程序选择的季/集
         select_step = ScrapeLogStep(name="确定季/集", logs=[])
         scrape_logs.append(select_step)
         if parsed.season is not None and parsed.episode is not None:
             select_step.logs.append(ScrapeLogEntry(message=f"从文件名解析: S{season_num:02d}E{episode_num:02d}"))
+        elif season_corrected:
+            select_step.logs.append(ScrapeLogEntry(
+                message=f"TMDB 结构纠正: S{season_num:02d}E{episode_num:02d} (原误判为 S01E{parsed.episode:02d})"
+            ))
         else:
             msgs = []
             if parsed.season is None:
@@ -1095,9 +1121,13 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             if sm:
                 base = sm.group(1).strip()
                 num = int(sm.group(2))
-                if len(base) >= 2 and 1 <= num <= 12 and num < 1980 and episode_num != num:
+                if len(base) >= 2 and 1 <= num <= 12 and num < 1980:
                     series_name = base
                     season_num = num
+                    if episode_num == num:
+                        # 同一数字同时出现在剧名后缀和集号中
+                        # → 它是卷号/季号，不是集号
+                        episode_num = 1
                     hanime_step.logs.append(ScrapeLogEntry(
                         message=f"从 Hanime 剧名提取季号: Season {season_num}"
                     ))

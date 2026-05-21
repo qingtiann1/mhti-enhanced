@@ -503,9 +503,16 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             year = series.first_air_date.year if series.first_air_date else None
             effective_output_dir = await self._get_output_dir(request.output_dir)
 
+            # 复用已存在的同 TMDB ID 文件夹，避免手动选择或历史迁移导致的碎片化
+            resolved_title = series.name
+            if effective_output_dir:
+                resolved_title = self._resolve_series_folder(
+                    effective_output_dir, result.selected_id, series.name
+                )
+
             rename_request = RenameRequest(
                 source_path=file_path,
-                title=series.name,
+                title=resolved_title,
                 season=season_num,
                 episode=episode_num,
                 year=year,
@@ -547,6 +554,9 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             dest_file = Path(rename_result.dest_path)
             season_folder = dest_file.parent
             series_folder = season_folder.parent
+
+            # 写入剧集身份标识，方便后续同 TMDB ID 文件复用文件夹
+            self._write_series_identity(series_folder, result.selected_id)
 
             # 确定元数据输出目录（NFO、图片）
             if request.metadata_dir:
@@ -1088,10 +1098,10 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         n = re.sub(r'\s*\(\d{4}\)\s*$', '', n)
         # 方括号后缀 [アニメEND] [原作END]
         n = re.sub(r'\s*\[.*?\]\s*$', '', n)
-        # 破折号描述后缀 -xxx- 或 —xxx—
-        n = re.sub(r'\s*[-–—]\s*.+?[-–—]?\s*$', '', n)
+        # 破折号描述后缀（含全角－） -xxx- / —xxx— / －xxx－
+        n = re.sub(r'\s*[-–—－]\s*.+?[-–—－]?\s*$', '', n)
         # ～xxx～ 副标题
-        n = re.sub(r'\s*[～~]\s*.+$', '', n)
+        n = re.sub(r'\s*[～〜~]\s*.+$', '', n)
         # DIRECTOR版 / 特典
         n = re.sub(r'\s+\d*\s*DIRECTOR版\s*$', '', n)
         n = re.sub(r'\s+特典\s*$', '', n)
@@ -1099,19 +1109,30 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         n = re.sub(r'\s*・\s*.$', '', n)
         # 集话标记 第N話/第N话 + 可能的后续描述
         n = re.sub(r'\s+第\d+[話話话]\s*.*$', '', n)
+        # 日文/德文分集标记 Karte.N[.N] / Experiment.N / ope_N / Scene N / Epilogue N
+        n = re.sub(r'\s+(?:Karte|Experiment|ope)[._]\s*\d+(?:\.\d+)?(?:\s*.*)?$', '', n, flags=re.I)
+        n = re.sub(r'\s+(?:Scene|Epilogue)\s+\d+(?:\s*.*)?$', '', n, flags=re.I)
+        # 日文前后篇/上下卷标记（简繁两种写法）
+        n = re.sub(r'\s+[前後后]編\s*$', '', n)
+        n = re.sub(r'\s+[前後后][篇编]\s*$', '', n)
+        n = re.sub(r'\s+[上下]巻\s*$', '', n)
+        n = re.sub(r'\s+[上下]卷\s*$', '', n)
+        n = re.sub(r'\s+[中総总]編\s*$', '', n)
+        n = re.sub(r'\s+[中総总][篇编]\s*$', '', n)
         # 末尾独立数字（季号/卷号），如 " 2" " 12"
         n = re.sub(r'\s+\d{1,2}\s*$', '', n)
         return n.strip().rstrip('・·-–—').strip()
 
-    async def _normalize_series_name_via_tmdb(self, series_name: str) -> str | None:
-        """通过 TMDB 搜索归一化剧集名称，避免同系列因副标题差异而碎片化。
+    async def _normalize_series_name_via_tmdb(self, series_name: str) -> tuple[str, int | None] | None:
+        """通过 TMDB 搜索归一化剧集名称，避免同系列因副标题/语言差异而碎片化。
 
         先用 _clean_series_name 清洗分集特有后缀，再尝试 TMDB 确认。
-        即使 TMDB 未收录，只要清洗后的名称不同（去掉了分集标记），
-        也返回清洗名——保证同系列各分集使用相同的输出目录。
+        TMDB 匹配时返回其规范名称（而非清洗后的输入名），
+        确保中/日文异名指向同一输出目录。
 
         Returns:
-            归一化的剧集名称，或 None（清洗后无变化且 TMDB 无匹配）
+            (归一化名称, TMDB ID) 或 None。
+            TMDB ID 仅在 TMDB 匹配时有效，否则为 None。
         """
         import re
         try:
@@ -1124,24 +1145,83 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             adult_results = [r for r in search_response.results if r.adult]
 
             if adult_results:
-                # TMDB 确认：使用清洗名（保留用户语言，不用 TMDB 英文名）
-                return cleaned
+                # TMDB 确认：使用 TMDB 规范名称，统一中/日文异名
+                best = adult_results[0]
+                return (best.name, best.id)
 
             # TMDB 无匹配但清洗后名称不同 → 仍使用清洗名
             # 因为去掉的是分集特有标记（年份/括号/副标题等），
             # 不影响系列识别，能保证同名系列归入同一目录
             if cleaned != series_name:
-                return cleaned
+                return (cleaned, None)
 
             # 清洗后无变化且 TMDB 无匹配 → 尝试原名称搜索
             search_response = await self.tmdb_service.search_series_by_api(series_name)
             adult_results = [r for r in search_response.results if r.adult]
             if adult_results:
-                return cleaned
+                best = adult_results[0]
+                return (best.name, best.id)
 
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _resolve_series_folder(output_dir: str, tmdb_id: int, candidate_title: str) -> str:
+        """检查输出目录中是否已有同 TMDB ID 的文件夹，有则复用其名称。
+
+        遍历 output_dir 下的子目录，读取 .mhti_series.json，
+        若其中 tmdb_id 与参数匹配，返回记录中的文件夹名。
+
+        Args:
+            output_dir: 输出根目录
+            tmdb_id: TMDB 剧集 ID
+            candidate_title: 当前候选剧集名（无匹配时回退用）
+
+        Returns:
+            应使用的剧集名（已存在的或候选的）
+        """
+        import json
+        output_path = Path(output_dir)
+        if not output_path.exists():
+            return candidate_title
+        try:
+            for subdir in output_path.iterdir():
+                if not subdir.is_dir():
+                    continue
+                id_file = subdir / ".mhti_series.json"
+                if not id_file.exists():
+                    continue
+                try:
+                    data = json.loads(id_file.read_text(encoding="utf-8"))
+                    if data.get("tmdb_id") == tmdb_id:
+                        return data.get("folder_name", subdir.name)
+                except (json.JSONDecodeError, OSError):
+                    continue
+        except OSError:
+            pass
+        return candidate_title
+
+    @staticmethod
+    def _write_series_identity(series_folder: Path, tmdb_id: int) -> None:
+        """在剧集文件夹写入身份标识文件，便于后续文件复用同一文件夹。
+
+        Args:
+            series_folder: 剧集文件夹路径
+            tmdb_id: TMDB 剧集 ID
+        """
+        import json
+        id_file = series_folder / ".mhti_series.json"
+        if id_file.exists():
+            return
+        try:
+            data = {
+                "tmdb_id": tmdb_id,
+                "folder_name": series_folder.name,
+            }
+            id_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
 
     async def _scrape_via_hanime(
         self,
@@ -1179,7 +1259,12 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         # Hanime API 优先：API 知道正确的剧集分组，解析器仅作回退
         api_series_name = self.hanime_service.get_series_name(detail)
         series_name = api_series_name or parsed.series_name
-        episode_num = self.hanime_service.get_episode_number(detail) or parsed.episode or 1
+        # 集号优先级：标题文本提取 > series_videos 列表位置 > 文件名解析 > 默认1
+        episode_num = (
+            self.hanime_service.get_episode_number(detail)
+            or self.hanime_service.get_episode_number_from_series(detail)
+            or parsed.episode or 1
+        )
         season_num = parsed.season or 1
 
         # 从 API 剧名中提取嵌入式季号（如 "自宅警备员2" → season=2）
@@ -1213,13 +1298,18 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         await notify()
 
         # TMDB 归一化：避免同系列因 hanime 副标题不同而分到多个输出目录
-        normalized = await self._normalize_series_name_via_tmdb(series_name)
-        if normalized and normalized != series_name:
-            hanime_step.logs.append(ScrapeLogEntry(
-                message=f"TMDB 归一化: '{series_name}' → '{normalized}'"
-            ))
-            series_name = normalized
-            await notify()
+        norm_result = await self._normalize_series_name_via_tmdb(series_name)
+        tmdb_id_for_folder: int | None = None
+        if norm_result:
+            norm_name, norm_tmdb_id = norm_result
+            if norm_name != series_name:
+                hanime_step.logs.append(ScrapeLogEntry(
+                    message=f"TMDB 归一化: '{series_name}' → '{norm_name}'"
+                ))
+                series_name = norm_name
+                await notify()
+            if norm_tmdb_id:
+                tmdb_id_for_folder = norm_tmdb_id
 
         # Translate description to Chinese if needed
         if detail.description:
@@ -1250,6 +1340,17 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             # 不传年份：Hanime 每集上传日期不同会导致同名系列分裂到不同文件夹
             # NFO 中的年份仍由 Hanime API 数据独立提供
             effective_output_dir = await self._get_output_dir(request.output_dir)
+
+            # 复用已存在的同 TMDB ID 文件夹，避免同系列碎片化
+            if tmdb_id_for_folder and effective_output_dir:
+                resolved = self._resolve_series_folder(effective_output_dir, tmdb_id_for_folder, series_name)
+                if resolved != series_name:
+                    hanime_step.logs.append(ScrapeLogEntry(
+                        message=f"复用已有文件夹: '{series_name}' → '{resolved}'"
+                    ))
+                    series_name = resolved
+                    await notify()
+
             rename_request = RenameRequest(
                 source_path=file_path,
                 title=series_name,
@@ -1282,6 +1383,10 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             dest_file = Path(rename_result.dest_path)
             season_folder = dest_file.parent
             series_folder = season_folder.parent
+
+            # 写入剧集身份标识，方便后续同 TMDB ID 文件复用文件夹
+            if tmdb_id_for_folder:
+                self._write_series_identity(series_folder, tmdb_id_for_folder)
 
             if request.metadata_dir:
                 metadata_base = Path(request.metadata_dir)
@@ -1463,13 +1568,18 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 ))
 
         # TMDB 归一化：统一同系列不同分集的输出目录
-        normalized = await self._normalize_series_name_via_tmdb(bgm_title)
-        if normalized and normalized != bgm_title:
-            bgm_step.logs.append(ScrapeLogEntry(
-                message=f"TMDB 归一化: '{bgm_title}' → '{normalized}'"
-            ))
-            bgm_title = normalized
-            await notify()
+        norm_result = await self._normalize_series_name_via_tmdb(bgm_title)
+        tmdb_id_for_folder: int | None = None
+        if norm_result:
+            norm_name, norm_tmdb_id = norm_result
+            if norm_name != bgm_title:
+                bgm_step.logs.append(ScrapeLogEntry(
+                    message=f"TMDB 归一化: '{bgm_title}' → '{norm_name}'"
+                ))
+                bgm_title = norm_name
+                await notify()
+            if norm_tmdb_id:
+                tmdb_id_for_folder = norm_tmdb_id
 
         # Generate NFO from Bangumi data
         nfo_step = ScrapeLogStep(name="生成 NFO (Bangumi)", logs=[])
@@ -1495,6 +1605,17 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         try:
             year = self.bangumi_service.get_year(best)
             effective_output_dir = await self._get_output_dir(request.output_dir)
+
+            # 复用已存在的同 TMDB ID 文件夹，避免同系列碎片化
+            if tmdb_id_for_folder and effective_output_dir:
+                resolved = self._resolve_series_folder(effective_output_dir, tmdb_id_for_folder, bgm_title)
+                if resolved != bgm_title:
+                    bgm_step.logs.append(ScrapeLogEntry(
+                        message=f"复用已有文件夹: '{bgm_title}' → '{resolved}'"
+                    ))
+                    bgm_title = resolved
+                    await notify()
+
             rename_request = RenameRequest(
                 source_path=file_path,
                 title=bgm_title,
@@ -1527,6 +1648,10 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             dest_file = Path(rename_result.dest_path)
             season_folder = dest_file.parent
             series_folder = season_folder.parent
+
+            # 写入剧集身份标识，方便后续同 TMDB ID 文件复用文件夹
+            if tmdb_id_for_folder:
+                self._write_series_identity(series_folder, tmdb_id_for_folder)
 
             if request.metadata_dir:
                 metadata_base = Path(request.metadata_dir)

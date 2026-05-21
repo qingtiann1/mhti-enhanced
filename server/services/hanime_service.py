@@ -73,7 +73,7 @@ class HanimeService:
 
         Uses subtitle (Chinese name) if available, otherwise title (Japanese name).
         Strips episode numbers, volume markers, season markers, episode-variant
-        suffixes (・color, 【character】), and whitespace.
+        suffixes (・color, 【character】, ～篇/編), and whitespace.
         """
         name = detail.subtitle or detail.title
         name = name.strip()
@@ -81,7 +81,7 @@ class HanimeService:
         # Strip episode/volume/season markers from the end
         import re
         patterns = [
-            r"\s+第?\s*\d+\s*[話集话回章弾幕期季卷冊]$",  # 第1話, 第2集
+            r"\s+第?\s*\d+\s*[話集话回章弾幕期季卷冊篇編]$",  # 第1話, 第2集
             r"\s+[Ff]it\.?\s*\d+\s*$",                  # " Fit. 1"
             r"\s+[Vv]ol\.?\s*\d+\s*$",                  # " Vol. 1"
             r"\s+[Ee][Pp]\.?\s*\d+\s*$",               # " EP. 1"
@@ -107,11 +107,15 @@ class HanimeService:
         # e.g., "不洁之星・紫" → "不洁之星", "夜勤病棟・参" → "夜勤病棟"
         # Multi-char suffixes after ・ are kept (they indicate different sub-series,
         # e.g., "妻NTR・零" vs "妻NTR・凌辱轮回")
+        # Also handles space-separated variant in subtitles (e.g., "不洁之星 紫")
         name = re.sub(
-            r"\s*・\s*([赤紫青黒白紅藍緑金銀朱碧蒼翠紅丹紺藍参弐零壱])$",
+            r"\s*[・\s]\s*([赤紫青黒白紅藍緑金銀朱碧蒼翠紅丹紺藍参弐零壱])\s*$",
             r"",
             name,
         )
+
+        # Strip 篇/編 chapter suffix (e.g., "女狼狂濡 濡妇篇" → "女狼狂濡")
+        name = re.sub(r"\s+\S{2,6}[篇編]\s*$", "", name)
 
         return name.strip()
 
@@ -134,6 +138,21 @@ class HanimeService:
             m = re.search(pat, title)
             if m:
                 return int(m.group(1))
+        return None
+
+    def get_episode_number_from_series(self, detail: HanimeVideoDetail) -> int | None:
+        """从 series_videos 列表位置确定集号。
+
+        当标题中没有显式集号时（如 "不洁之星・紫"、"女狼狂濡 濡妇篇"），
+        用当前视频在 series_videos 中的位置作为集号。
+        Hanime API 的 series_videos 按发布顺序排列，位置=集号。
+        """
+        videos = detail.series_videos
+        if not videos:
+            return None
+        for i, v in enumerate(videos):
+            if v.video_id == detail.video_id:
+                return i + 1  # 1-based
         return None
 
     def get_genres(self, detail: HanimeVideoDetail) -> list[str]:
